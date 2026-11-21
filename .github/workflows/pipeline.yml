@@ -1,0 +1,102 @@
+name: CI/CD Pipeline - Orders Service
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-orders-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Pruebas y Compilación .NET
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar dependencias
+        run: dotnet restore
+
+      - name: Compilar proyecto
+        run: dotnet build --no-restore -c Release
+
+  build:
+    name: Publicar Binario .NET
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publicar para Linux
+        run: |
+          dotnet publish -c Release -o bin/publicado --nologo -v q
+          mkdir -p dist
+          tar -czf dist/orders-service.tar.gz -C bin/publicado .
+
+      - name: Subir artefacto a GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: orders-service-artifact
+          path: dist/orders-service.tar.gz
+          retention-days: 7
+
+  deploy:
+    name: Desplegar en EC2 AWS
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar artefacto
+        uses: actions/download-artifact@v4
+        with:
+          name: orders-service-artifact
+          path: ./dist
+
+      - name: Configurar llave SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Copiar artefacto a EC2 via SCP
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+        run: |
+          scp -o StrictHostKeyChecking=no ./dist/orders-service.tar.gz $USER@$HOST:/tmp/orders-service.tar.gz
+
+      - name: Ejecutar despliegue en EC2 via SSH
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=no $USER@$HOST << 'EOF'
+            set -e
+            TARGET_DIR="$HOME/entradas-ya/orders"
+            mkdir -p "$TARGET_DIR/bin/publicado"
+            tar -xzf /tmp/orders-service.tar.gz -C "$TARGET_DIR/bin/publicado"
+            rm -f /tmp/orders-service.tar.gz
+            
+            if systemctl list-unit-files | grep -q "entradasya-orders.service"; then
+              sudo systemctl restart entradasya-orders
+              echo "Servicio entradasya-orders reiniciado."
+            fi
+            
+            echo "Despliegue de orders completado con éxito."
+          EOF
