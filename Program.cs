@@ -208,7 +208,7 @@ app.MapGet("/health", async () =>
         await using var c = await Conectar();
         await using var cmd = new NpgsqlCommand("SELECT 1", c);
         await cmd.ExecuteScalarAsync();
-        return Results.Ok(new { status = "ok", servicio = "orders", db = "ok" , "demo": "pipeline-ok"});
+        return Results.Ok(new { status = "ok", servicio = "orders", db = "ok" });
     }
     catch (Exception e)
     {
